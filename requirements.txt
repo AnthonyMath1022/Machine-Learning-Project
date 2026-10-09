@@ -24,8 +24,6 @@ PySide6                 # Qt 6 widgets; import name: PySide6 (not legacy PySide)
 requests                # Download HTML and call job-listing APIs
 beautifulsoup4          # Parse HTML; import with: from bs4 import BeautifulSoup
 lxml                    # HTML/XML parser for Beautiful Soup
-nltk                    # Tokenization used by the existing crawler
-deepagents              # Agent prototype used by the existing crawler
 sentence-transformers   # Local embeddings in src/nlp/embeddings.py
 
 # Data processing and matching (used by resume_match.ipynb)
@@ -38,6 +36,8 @@ matplotlib              # Plot matching results
 seaborn                 # Statistical visualizations
 
 # Optional: uncomment only the packages needed for your implementation.
+# nltk                  # Optional notebook experiments; crawler uses regex tokens
+# deepagents            # Optional agent experiments; not needed for HTML extraction
 # playwright            # Render JavaScript-driven job pages
 # After installing Playwright, run: python -m playwright install chromium
 # scrapy                # Crawl many pages with scheduling and pipelines

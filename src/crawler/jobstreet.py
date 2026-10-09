@@ -1,20 +1,22 @@
+from matplotlib.pylab import matrix
 import pandas as pd
 from bs4 import BeautifulSoup
 from sklearn.feature_extraction.text import TfidfVectorizer
-from deepagents import create_deep_agent
+from sklearn.metrics.pairwise import cosine_similarity
+from model import MODEL_ID, device, processor, model
 import os
 import requests
 import urllib.request
 
 import nltk
 from nltk.tokenize import word_tokenize
+from src.nlp.matcher import cosine_similarity
 
 nltk.download('punkt')
 
 class JobDescriptionSearch():
-    def __init__(self):
-        self
-    def search_job(job_title,location):
+    def search_job(self, job_title, location):
+        # Fetch search results and collect job-detail links here.
         user_input = input("Enter the job title you want to search for: ")
         location_input = input("Enter the location you want to search in: ")
         url = f"https://my.jobstreet.com/en/job-search/job-vacancy.php?ojs=10&key={job_title}&location={location}"
@@ -22,23 +24,30 @@ class JobDescriptionSearch():
         content = urllib.request.urlopen(url).read()
         soup = BeautifulSoup(request.content, 'html.parser')
 
-
-        prompt = f"Please extract the job description from the following HTML content:\n\n{soup.prettify()}"
-        
-        agent = create_deep_agent(
-            model = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.7)
-        )
-
-    def extract_job_description_from_html(html_content):
+    @staticmethod
+    def extract_job_description_from_html(html_content, selector):
         soup = BeautifulSoup(html_content, "html.parser")
-        job_description = soup.get_text(separator="\n")
-        return job_description.strip()
+        description = soup.select_one(selector)
+
+        if description is None:
+            raise ValueError(
+                "Description element not found; check the HTML and selector."
+            )
+
+        for element in description.select("script, style, noscript"):
+            element.decompose()
+
+        text = description.get_text(separator="\n", strip=True)
+
+        if not text:
+            raise ValueError("The description element is empty.")
+
+        return text
 
     def calculate_similarity(resume_text, job_description):
         vectorizer = TfidfVectorizer()
-        tfidf_matrix = vectorizer.fit_transform([resume_text, job_description])
-        similarity_score = (tfidf_matrix * tfidf_matrix.T).A[0, 1]
-        return similarity_score
+        matrix = vectorizer.fit_transform([resume_text, job_description])
+        return float(cosine_similarity(matrix[0], matrix[1])[0, 0])
 
     def Jobs_keywords_calculation(job_description):
         tokens = word_tokenize(job_description)
@@ -96,10 +105,3 @@ def export_to_csv(data, filename):
     df.to_csv(filename, index=False)
     print(f"Data exported to {filename}")
 
-def cosine_similarity(vec1, vec2):
-    dot_product = sum(a * b for a, b in zip(vec1, vec2))
-    magnitude1 = sum(a ** 2 for a in vec1) ** 0.5
-    magnitude2 = sum(b ** 2 for b in vec2) ** 0.5
-    if magnitude1 == 0 or magnitude2 == 0:
-        return 0.0
-    return dot_product / (magnitude1 * magnitude2)
