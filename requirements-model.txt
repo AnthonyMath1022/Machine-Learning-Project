@@ -1,0 +1,7 @@
+# Optional local Gemma agent. Install inside the project's virtual environment:
+# python -m pip install -r requirements-model.txt
+# Loading weights happens only on the first analysis call, never on import.
+transformers>=5.7.0,<6
+torch>=2.2
+accelerate>=1.0
+pydantic>=2,<3

@@ -13,12 +13,12 @@ python-dotenv           # Load local configuration, including API keys, from .en
 
 # Resume document parsing
 langchain-community     # PyPDFLoader and UnstructuredWordDocumentLoader
-pypdf                   # Extract text from PDFs; image-only scans need OCR
-python-docx             # Read .docx resumes (not legacy .doc files)
+pypdf>=6,<7             # Extract PDF text; image-only scans need OCR
+python-docx>=1.2,<2      # Read DOCX paragraphs and tables in document order
 unstructured[docx]      # Parse .docx files with UnstructuredWordDocumentLoader
 
 # Desktop interface
-PySide6                 # Qt 6 widgets; import name: PySide6 (not legacy PySide)
+PySide6>=6.8,<7          # Qt 6 desktop widgets; minimal setup: requirements-desktop.txt
 
 # Fetch and parse job-posting pages
 requests                # Download HTML and call job-listing APIs
@@ -42,9 +42,8 @@ seaborn                 # Statistical visualizations
 # After installing Playwright, run: python -m playwright install chromium
 # scrapy                # Crawl many pages with scheduling and pipelines
 # langchain-chroma      # Store/search embeddings through LangChain (installs chromadb)
-# transformers          # Optional experiment in src/models/model.py
-# torch                 # Optional experiment in src/models/model.py
-# accelerate            # Optional model device placement
+# Local Gemma agent: install -r requirements-model.txt separately.
+# Baidu PDF OCR: install requirements-ocr.txt in a separate .venv-ocr environment.
 # streamlit             # Upload resumes and display results in a simple web UI
 # ipykernel             # Run this environment as a Jupyter/VS Code notebook kernel
 
