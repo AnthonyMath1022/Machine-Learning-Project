@@ -1,0 +1,15 @@
+# Python and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Resumes, scraped listings, and generated outputs
+data/*
+!data/.gitkeep

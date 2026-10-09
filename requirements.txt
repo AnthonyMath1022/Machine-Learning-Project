@@ -1,0 +1,60 @@
+# Resume analyser / resume-to-job matching starter dependencies.
+# Install: python -m pip install -r requirements.txt
+# Versions are intentionally unpinned: this is a starter list, not a tested lockfile.
+
+# AI analysis, structured extraction, and embeddings
+openai                  # Official OpenAI Python SDK; requires OPENAI_API_KEY
+langchain               # Compose model calls and analysis workflows
+langchain-openai        # LangChain's OpenAI chat and embedding integration
+langchain-text-splitters # Split long resumes and job descriptions into chunks
+tiktoken                # Count tokens for OpenAI model inputs
+pydantic                # Validate structured resume fields and analysis results
+python-dotenv           # Load local configuration, including API keys, from .env
+
+# Resume document parsing
+langchain-community     # PyPDFLoader and UnstructuredWordDocumentLoader
+pypdf                   # Extract text from PDFs; image-only scans need OCR
+python-docx             # Read .docx resumes (not legacy .doc files)
+unstructured[docx]      # Parse .docx files with UnstructuredWordDocumentLoader
+
+# Desktop interface
+PySide6                 # Qt 6 widgets; import name: PySide6 (not legacy PySide)
+
+# Fetch and parse job-posting pages
+requests                # Download HTML and call job-listing APIs
+beautifulsoup4          # Parse HTML; import with: from bs4 import BeautifulSoup
+lxml                    # HTML/XML parser for Beautiful Soup
+nltk                    # Tokenization used by the existing crawler
+deepagents              # Agent prototype used by the existing crawler
+sentence-transformers   # Local embeddings in src/nlp/embeddings.py
+
+# Data processing and matching (used by resume_match.ipynb)
+numpy                   # Numerical arrays and embedding calculations
+pandas                  # Organize resume/job data and matching results
+scikit-learn            # TF-IDF and cosine similarity; import name: sklearn
+
+# Existing notebook plots
+matplotlib              # Plot matching results
+seaborn                 # Statistical visualizations
+
+# Optional: uncomment only the packages needed for your implementation.
+# playwright            # Render JavaScript-driven job pages
+# After installing Playwright, run: python -m playwright install chromium
+# scrapy                # Crawl many pages with scheduling and pipelines
+# langchain-chroma      # Store/search embeddings through LangChain (installs chromadb)
+# transformers          # Optional experiment in src/models/model.py
+# torch                 # Optional experiment in src/models/model.py
+# accelerate            # Optional model device placement
+# streamlit             # Upload resumes and display results in a simple web UI
+# ipykernel             # Run this environment as a Jupyter/VS Code notebook kernel
+
+# Installation references:
+# https://developers.openai.com/api/docs/quickstart
+# https://docs.langchain.com/oss/python/langchain/install
+# https://www.crummy.com/software/BeautifulSoup/bs4/doc/
+# https://pypdf.readthedocs.io/en/stable/user/extract-text.html
+# https://python-docx.readthedocs.io/en/latest/
+# https://doc.qt.io/qtforpython-6/gettingstarted.html
+# https://playwright.dev/python/docs/intro
+# https://docs.scrapy.org/en/latest/intro/install.html
+# https://docs.langchain.com/oss/python/integrations/vectorstores/chroma
