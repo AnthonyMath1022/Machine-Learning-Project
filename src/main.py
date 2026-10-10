@@ -1,4 +1,4 @@
-"""PySide6 desktop workspace for local resume extraction.
+"""PySide6 desktop workspace for resumes, job crawling and AI matching.
 
 Launch from the project root with ``python -m src.main``.
 """
@@ -13,7 +13,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
     QInputDialog, QLabel, QLayout, QLineEdit, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
 # Support both `python -m src.main` and `python src/main.py`.
@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
 
 from src.nlp.skill_extractor import extract_skills
 from src.resume.parser import EncryptedPDFError, extract_resume_text
+from src.ui.job_workspace import JobWorkspace
 
 
 class ResumeWorker(QThread):
@@ -30,14 +31,17 @@ class ResumeWorker(QThread):
     extracted = Signal(str)
     failed = Signal(str, bool)
 
-    def __init__(self, path: Path, *, ocr: bool, password: str | None, parent=None):
+    def __init__(self, path: Path, *, ocr: bool, password: str | None, before_extract=None, parent=None):
         super().__init__(parent)
         self.path = path
         self.ocr = ocr
         self.password = password
+        self.before_extract = before_extract
 
     def run(self):
         try:
+            if self.before_extract is not None:
+                self.before_extract()
             text = extract_resume_text(self.path, ocr=self.ocr, password=self.password)
         except Exception as error:
             # Report backend/dependency errors to the desktop user as well.
@@ -71,6 +75,14 @@ QProgressBar { border: 0; border-radius: 3px; background: #e8edf6; height: 5px; 
 QProgressBar::chunk { background: #285bd5; border-radius: 3px; }
 QSplitter::handle { background: transparent; }
 QStatusBar { background: #e8edf5; color: #354762; }
+QTabWidget::pane { border: 0; }
+QTabBar::tab { padding: 10px 18px; background: #e8edf5; border-radius: 4px; }
+QTabBar::tab:selected { background: #285bd5; color: white; }
+QLineEdit, QSpinBox, QListWidget {
+    background: white; color: #18243a; border: 1px solid #dbe2ed; border-radius: 5px; padding: 5px;
+}
+QListWidget::item { padding: 8px 4px; }
+QListWidget::item:selected { background: #e1ebff; color: #18243a; }
 """
 
 
@@ -90,8 +102,8 @@ class MainWindow(QMainWindow):
         self.selected_path: Path | None = None
         self.worker: ResumeWorker | None = None
         self._pending_error: tuple[str, bool] | None = None
-        self.setWindowTitle("Resume Workspace")
-        self.resize(1040, 740)
+        self.setWindowTitle("Resume & Job Workspace")
+        self.resize(1140, 860)
         self.setMinimumSize(780, 560)
         self.setStyleSheet(STYLE)
         self._build_ui()
@@ -105,8 +117,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(workspace)
         layout.setContentsMargins(28, 24, 28, 18)
         layout.setSpacing(16)
-        layout.addWidget(label("Resume workspace", "title"))
-        layout.addWidget(label("Extract, review and export your resume text on your desktop.", "subtitle"))
+        layout.addWidget(label("Resume & job workspace", "title"))
+        layout.addWidget(label("Review your resume, find jobs and compare requirement evidence.", "subtitle"))
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+        resume_page = QWidget()
+        layout = QVBoxLayout(resume_page)
+        layout.setContentsMargins(0, 12, 0, 0)
+        self.tabs.addTab(resume_page, "Resume")
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -186,6 +204,13 @@ class MainWindow(QMainWindow):
         text_layout.addLayout(actions)
         splitter.addWidget(text_card)
         splitter.setSizes([300, 680])
+        self.jobs_panel = JobWorkspace(
+            self.text_preview.toPlainText, lambda: self.selected_path, self,
+        )
+        self.jobs_panel.busy_changed.connect(lambda _: self._refresh_controls())
+        self.jobs_panel.status_changed.connect(self.statusBar().showMessage)
+        self.text_preview.textChanged.connect(self.jobs_panel.invalidate_results)
+        self.tabs.addTab(self.jobs_panel, "Jobs & matching")
         self.setCentralWidget(workspace)
 
     def _build_menu(self):
@@ -205,7 +230,7 @@ class MainWindow(QMainWindow):
         menu.addAction(quit_action)
 
     def _refresh_controls(self):
-        busy = self.worker is not None
+        busy = self.busy
         selected = self.selected_path is not None
         has_text = bool(self.text_preview.toPlainText())
         self.browse_button.setEnabled(not busy)
@@ -215,8 +240,13 @@ class MainWindow(QMainWindow):
         self.ocr_checkbox.setEnabled(not busy and selected and self.selected_path.suffix.lower() == ".pdf")
         for control in (self.copy_button, self.save_button, self.save_action):
             control.setEnabled(has_text and not busy)
-        self.parse_button.setText("Extracting…" if busy else "Extract resume")
-        self.progress.setVisible(busy)
+        self.parse_button.setText("Extracting…" if self.worker is not None else "Extract resume")
+        self.progress.setVisible(self.worker is not None)
+        self.jobs_panel.set_external_busy(self.worker is not None)
+
+    @property
+    def busy(self) -> bool:
+        return self.worker is not None or self.jobs_panel.worker is not None
 
     def _clear_preview(self):
         self.text_preview.clear()
@@ -225,7 +255,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def browse_file(self):
-        if self.worker is not None:
+        if self.busy:
             return
         directory = str(self.selected_path.parent) if self.selected_path else str(Path.home())
         path, _ = QFileDialog.getOpenFileName(
@@ -237,7 +267,7 @@ class MainWindow(QMainWindow):
 
     def select_file(self, path: str | Path):
         """Select a document without starting expensive extraction or OCR."""
-        if self.worker is not None:
+        if self.busy:
             return
         candidate = Path(path).resolve()
         if candidate.suffix.lower() not in {".pdf", ".docx", ".txt"} or not candidate.is_file():
@@ -252,7 +282,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Resume selected. Click Extract resume to read it.")
 
     def parse_resume(self, file_path: str | Path | None = None, *, password: str | None = None):
-        if self.worker is not None:
+        if self.busy:
             return
         if file_path is not None:
             self.select_file(file_path)
@@ -264,6 +294,7 @@ class MainWindow(QMainWindow):
         self._pending_error = None
         self.worker = ResumeWorker(
             self.selected_path, ocr=self.ocr_checkbox.isChecked(), password=password, parent=self,
+            before_extract=self.jobs_panel.session.release if self.ocr_checkbox.isChecked() else None,
         )
         self.worker.extracted.connect(self._show_text)
         self.worker.failed.connect(self._record_error)
@@ -307,7 +338,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def clear_selection(self):
-        if self.worker is not None:
+        if self.busy:
             return
         self.selected_path = None
         self.file_name.setText("No file selected")
@@ -352,8 +383,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         # Never destroy a live QThread or interrupt the OCR subprocess mid-write.
-        if self.worker is not None:
-            self.statusBar().showMessage("Extraction is still running. Wait for it to finish before closing.")
+        if self.busy:
+            self.statusBar().showMessage("An operation is still running. Wait for it to finish before closing.")
             event.ignore()
         else:
             event.accept()
@@ -361,7 +392,7 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("Resume Workspace")
+    app.setApplicationName("Resume & Job Workspace")
     app.setOrganizationName("Job Market Project")
     window = MainWindow()
     window.show()

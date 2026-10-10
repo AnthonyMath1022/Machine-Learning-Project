@@ -43,6 +43,7 @@ seaborn                 # Statistical visualizations
 # scrapy                # Crawl many pages with scheduling and pipelines
 # langchain-chroma      # Store/search embeddings through LangChain (installs chromadb)
 # Local Gemma agent: install -r requirements-model.txt separately.
+# Desktop default Qwen3-8B Q4_K_M runs through installed Ollama; see README.md.
 # Baidu PDF OCR: install requirements-ocr.txt in a separate .venv-ocr environment.
 # streamlit             # Upload resumes and display results in a simple web UI
 # ipykernel             # Run this environment as a Jupyter/VS Code notebook kernel

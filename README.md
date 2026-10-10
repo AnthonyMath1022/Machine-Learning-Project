@@ -11,13 +11,18 @@ job-market-project/
 |-- src/
 |   |-- __init__.py
 |   |-- main.py
+|   |-- ui/
+|   |   |-- __init__.py
+|   |   `-- job_workspace.py
 |   |-- crawler/
 |   |   |-- __init__.py
 |   |   |-- jobstreet.py
 |   |   `-- parser.py
 |   |-- models/
 |   |   |-- __init__.py
+|   |   |-- config.py
 |   |   |-- job.py
+|   |   |-- ollama_agent.py
 |   |   `-- model.py
 |   |-- resume/
 |   |   |-- __init__.py
@@ -47,11 +52,14 @@ job-market-project/
 
 | Path | Responsibility |
 | --- | --- |
-| `src/main.py` | PySide6 desktop resume selection, background extraction, text review and export. |
+| `src/main.py` | PySide6 desktop entry point, resume extraction and shared operation state. |
+| `src/ui/job_workspace.py` | JobStreet retrieval, job text, TF-IDF scoring and selectable local AI backends. |
 | `src/crawler/jobstreet.py` | JobStreet Malaysia search, individual ad fetching, and CSV export. |
 | `src/crawler/parser.py` | Extract job fields from recognized HTML containers or JSON-LD JobPosting metadata. |
 | `src/models/job.py` | Pydantic `Job` schema for structured listing data. |
 | `src/models/model.py` | Lazy local Gemma agent for job summaries and resume fit comparisons. |
+| `src/models/ollama_agent.py` | Qwen GGUF inference through local Ollama with the shared evidence validation. |
+| `src/models/config.py` | Desktop defaults: Qwen3-8B Q4_K_M, local Ollama and an 8K context. |
 | `src/resume/parser.py` | Local PDF/DOCX/TXT resume extraction with clear extraction errors. |
 | `src/resume/ocr.py` | Optional Baidu Unlimited-OCR fallback in an isolated CUDA worker. |
 | `src/nlp/skill_extractor.py` | Keyword-based skill extraction; extend `SKILLS` here. |
@@ -60,7 +68,7 @@ job-market-project/
 | `notebooks/resume_match.ipynb` | Existing notebook, including its saved outputs, for experiments. |
 | `data/` | Local resumes, saved HTML, datasets, and matching results. Contents are ignored by Git. |
 | `requirements.txt` | Starter dependency list; versions are unpinned and installation has not been verified. |
-| `requirements-desktop.txt` | Lightweight PySide6 UI and PDF/DOCX readers without the AI stack. |
+| `requirements-desktop.txt` | PySide6 UI, document readers, crawling and text similarity without model inference dependencies. |
 | `requirements-model.txt` | Optional local Gemma inference dependencies. |
 | `requirements-resume.txt` | Lightweight PDF/DOCX parsing dependencies without model/UI packages. |
 | `requirements-ocr.txt` | Baidu's tested Transformers 4.57.1 OCR stack, installed separately from Gemma. |
@@ -84,7 +92,7 @@ If `python` is unavailable, use the full path to your installed `python.exe`.
 The virtual environment commands above do not require PowerShell activation.
 Keep optional experimental dependencies commented out unless you use them.
 
-For just the desktop resume workspace, install the smaller dependency set:
+For the desktop workspace with local Ollama inference, install the smaller dependency set:
 
 ```powershell
 python -m venv .venv
@@ -110,17 +118,54 @@ Encrypted PDFs prompt for a password. For image-only PDF pages, opt into
 OCR is off by default; its first use may download model weights. While extraction
 is running, file changes and closing are disabled until the worker finishes.
 The interface also supports `python src/main.py`. Starting the desktop does not
-load Gemma or embedding models. Job crawling and AI job matching are not yet
-connected to this interface.
+load AI or embedding models or contact Ollama.
+
+In **Jobs & matching**, search JobStreet Malaysia by role, location and page.
+Select a listing and click **Load selected job** to fetch its full description;
+search summaries are not used for matching. You can also load an individual
+JobStreet URL. If a request is blocked or the ad layout is unsupported, paste the
+complete job description into the editable text area instead. Errors are shown
+without treating blocked pages as job descriptions.
+
+After extracting a resume and reviewing the job description, click **Text
+similarity** for a local TF-IDF score, or **Run AI match** for the local agent's
+validated assessment. Text similarity measures text overlap, not a hiring
+probability. AI matching uses the extracted resume text and the current job text,
+and defaults to **Ollama (GGUF)** with
+`hf.co/Qwen/Qwen3-8B-GGUF:Q4_K_M`. Start Ollama and pull that exact model once
+using the setup below. Changing the **AI model** field does not download a
+model; pull another Ollama model explicitly before selecting it. The alternative
+**Transformers (Gemma)** backend still accepts a compatible Hugging Face model
+ID or local path and needs `requirements-model.txt`.
+
+The **Match report** tab shows the advisory fit label, job summary, each
+requirement's job/resume evidence, and follow-up questions. Use **Copy report**
+or **Save JSON** to export it. Editing the job description/model setting or
+changing the extracted resume clears previous results. One backend operation
+runs at a time; resume OCR completes before AI inference starts. A cached AI
+model is released before OCR extraction to avoid competing for GPU memory.
+The agent is reused for repeated assessments of the same model. Startup performs no crawling
+or model downloads. Ollama normally retains the loaded model for five minutes;
+the app explicitly unloads it before OCR or when switching AI backends/models.
+
+The previous Gemma 31B default is now an optional backend; it cannot fit entirely
+on the detected 8 GB laptop GPU. Qwen3-8B Q4_K_M uses quantized GGUF weights
+through Ollama rather than loading/dequantizing them in Transformers.
+JobStreet previously returned HTTP 403 in this environment; live retrieval is
+not guaranteed, and pasted descriptions remain supported.
 
 Run the desktop workflow tests with the lightweight dependencies installed:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p test_main.py -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_job_workspace.py -v
 ```
 
-The tests use Qt's offscreen platform, real local PDF/DOCX/TXT fixtures and a
-mocked OCR backend; they do not download or run AI models.
+The tests use Qt's offscreen platform, real local PDF/DOCX/TXT fixtures, offline
+crawler responses and mocked model generation; they do not download or run AI models.
+The jobs and report views are also rendered and inspected at default and
+minimum window sizes. Run the complete offline suite with
+`.\.venv\Scripts\python.exe -m unittest discover -s tests -q`.
 
 Open `notebooks/resume_match.ipynb` in VS Code or Jupyter. Its dependency-install
 cell now resolves `requirements.txt` from either the project root or the
@@ -149,16 +194,74 @@ Fill in `.env` only when credentials are needed. Existing scripts do not
 automatically load it; an API-backed workflow should explicitly call
 `dotenv.load_dotenv` with the project's `.env` path.
 
-The desktop UI uses the shared resume extractor and skill catalog. The crawler
-uses the shared skill extractor and matching helpers, but crawling and AI
-matching still need to be connected to the UI.
+The desktop UI connects the shared resume extractor, skill catalog, JobStreet
+crawler, TF-IDF matcher and Qwen/Gemma assessment agents. Batch ranking, a
+persistent job database and alternative job sources remain future extensions.
 
 Importing the existing embeddings module still loads a model. The Gemma agent
 in `src/models/model.py` is safe to import: it loads weights only on the first
-analysis call. Connect the modules through `src/main.py` and validate the
-complete pipeline before relying on matching results.
+analysis call. Review extracted documents and model evidence before relying
+on matching results; the integrated pipeline has offline regression coverage.
 
-## Local Gemma job and resume agent
+## Local AI job and resume agents
+
+### Qwen3-8B Q4_K_M desktop default
+
+Install [Ollama](https://ollama.com/download/windows) if it is not already
+installed, start it, then run:
+
+```powershell
+ollama pull hf.co/Qwen/Qwen3-8B-GGUF:Q4_K_M
+.\.venv\Scripts\python.exe -m src.main
+```
+
+This selects the [official Qwen Q4_K_M GGUF](https://huggingface.co/Qwen/Qwen3-8B-GGUF/tree/main),
+approximately 5.03 GB. Ollama manages the model cache outside this repository.
+The desktop's defaults are **Ollama (GGUF)** and the exact model name above.
+`requirements-desktop.txt` already includes the Python dependencies; Qwen via
+Ollama does not need `requirements-model.txt`, PyTorch or Transformers.
+
+The client calls only the loopback Ollama API (`127.0.0.1:11434`), disables proxy
+forwarding and rejects redirects. It requests schema-constrained JSON with
+thinking disabled and checks the generated quotes using the original documents.
+See [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs).
+No resume text is sent to Hugging Face; Hugging Face is used to download weights.
+
+The context is set to 8,192 tokens with at most 2,048 output tokens to leave GPU
+memory for the context cache. Because Ollama exposes no public tokenizer endpoint,
+the client uses a conservative UTF-8 byte bound for input messages with reserved
+space for the chat template. This can reject documents that would tokenize into
+fewer tokens; shorten them when the context-budget error appears. It does not
+silently truncate the resume or job description. Truncated or malformed output
+is rejected rather than shown as a complete assessment.
+
+Use the same backend from the command line:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.models.ollama_agent --job data/job.txt --resume data/resume.pdf
+# Summary only:
+.\.venv\Scripts\python.exe -m src.models.ollama_agent --job data/job.txt
+```
+
+```python
+from src.models.ollama_agent import OllamaJobMatchAgent
+
+agent = OllamaJobMatchAgent()
+report = agent.assess_resume(job_description, extracted_resume_text)
+print(report.model_dump_json(indent=2))
+agent.unload()  # Release Ollama GPU memory when finished.
+```
+
+Verification: all 85 offline regressions passed. A real desktop comparison
+extracted a synthetic TXT resume, ran both Qwen inference stages and displayed
+a report with two validated requirements and matching source quotes. Ollama
+0.40.2 confirmed GGUF/Qwen3/Q4_K_M (8.19B parameters) and reported
+5,988,784,536 bytes (about 5.6 GiB) allocated in VRAM with an 8,192-token context
+on the RTX 5050 Laptop GPU. The test unloaded the model afterward and confirmed
+that Ollama listed no loaded models. This establishes local loading and end-to-end
+operation on one synthetic example, not accuracy for all resume/job pairs.
+
+### Optional Gemma Transformers backend
 
 The agent keeps `google/gemma-4-31B-it` as its default model and follows the
 [official model loading API](https://huggingface.co/google/gemma-4-31B-it).
@@ -198,7 +301,7 @@ print(report.model_dump_json(indent=2))
 For crawler results, pass `job.description` from `fetch_job()` to the agent.
 For saved HTML, obtain text with `extract_job_description_from_html()` first.
 Use `extract_resume_text()` for PDF/DOCX/TXT resumes, as described below.
-Desktop integration of the Gemma agent remains unfinished. Its command line accepts a UTF-8
+The desktop calls `assess_resume()` from **Run AI match**. The agent command line also accepts a UTF-8
 job `.txt` file and a resume in any of those three formats:
 
 ```powershell
