@@ -103,13 +103,89 @@ class JobWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.panel.results_list.count(), 0)
         self.assertFalse(self.panel.fetch_button.isEnabled())
         self.assertIn("No jobs found", self.panel.results_hint.text())
-        self.session.get.side_effect = requests.HTTPError("403 Forbidden")
+        response = response_for("<title>Just a moment...</title>")
+        response.status_code = 403
+        response.raise_for_status.side_effect = requests.HTTPError(response=response)
+        self.session.get.side_effect = None
+        self.session.get.return_value = response
+        self.panel.job_text.setPlainText(JOB)
         with patch("src.crawler.jobstreet.requests.Session", return_value=self.session), \
-                patch("src.ui.job_workspace.QMessageBox.warning") as warning:
+                patch("src.ui.job_workspace.QMessageBox.warning") as warning, \
+                patch("src.ui.job_workspace.QDesktopServices.openUrl", return_value=True) as open_url:
             self.panel.search_jobs()
             self.wait_for_operation()
-        self.assertIn("paste", warning.call_args.args[2])
-        self.assertIn("failed", self.panel.results_hint.text())
+        warning.assert_not_called()
+        self.assertEqual(open_url.call_args.args[0].toString(),
+                         "https://my.jobstreet.com/Data-Analyst-jobs/in-Kuala-Lumpur")
+        self.assertIn("HTTP 403", self.panel.results_hint.text())
+        self.assertIn("paste", self.panel.results_hint.text())
+        self.assertEqual(self.panel.results_list.count(), 0)
+        self.assertEqual(self.panel.job_text.toPlainText(), JOB)
+        self.assertTrue(self.panel.search_button.isEnabled())
+
+    def test_browser_search_uses_role_location_and_page_without_http(self):
+        self.panel.title_input.setText("C++ / R&D")
+        self.panel.location_input.setText("Kuala Lumpur")
+        self.panel.page_input.setValue(3)
+        with patch("src.crawler.jobstreet.requests.Session") as session, \
+                patch("src.ui.job_workspace.QDesktopServices.openUrl", return_value=True) as open_url:
+            self.panel.browser_search_button.click()
+        session.assert_not_called()
+        self.assertEqual(open_url.call_args.args[0].toString(),
+                         "https://my.jobstreet.com/C%2B%2B-%2F-R%26D-jobs/in-Kuala-Lumpur?page=3")
+        self.assertIn("paste", self.panel.results_hint.text())
+
+    def test_browser_launch_failure_shows_address_without_error_dialog(self):
+        self.session.get.return_value = response_for("<h1>Verify you are human</h1>")
+        with patch("src.crawler.jobstreet.requests.Session", return_value=self.session), \
+                patch("src.ui.job_workspace.QDesktopServices.openUrl", return_value=False), \
+                patch("src.ui.job_workspace.QMessageBox.warning") as warning:
+            self.panel.search_button.click()
+            self.wait_for_operation()
+        warning.assert_not_called()
+        self.assertIn("https://my.jobstreet.com/", self.panel.results_hint.text())
+        self.assertTrue(self.panel.browser_search_button.isEnabled())
+
+    def test_blocked_fetch_opens_ad_and_pasted_description_enables_matching(self):
+        self.prepare_match()
+        response = response_for("Access denied")
+        response.status_code = 429
+        response.raise_for_status.side_effect = requests.HTTPError(response=response)
+        self.session.get.return_value = response
+        self.panel.url_input.setText("/job/12345678?tracking=1#details")
+        with patch("src.crawler.jobstreet.requests.Session", return_value=self.session), \
+                patch("src.ui.job_workspace.QDesktopServices.openUrl", return_value=True) as open_url, \
+                patch("src.ui.job_workspace.QMessageBox.warning") as warning:
+            self.panel.fetch_url_button.click()
+            self.wait_for_operation()
+        warning.assert_not_called()
+        self.assertEqual(open_url.call_args.args[0].toString(), "https://my.jobstreet.com/job/12345678")
+        self.assertIn("HTTP 429", self.panel.job_source.text())
+        self.assertFalse(self.panel.match_button.isEnabled())
+        self.panel.job_text.setPlainText(JOB)
+        self.assertTrue(self.panel.match_button.isEnabled())
+        self.assertTrue(self.panel.browser_job_button.isEnabled())
+
+    def test_browser_ad_url_is_validated_and_tracking_removed(self):
+        with patch("src.ui.job_workspace.QDesktopServices.openUrl", return_value=True) as open_url, \
+                patch("src.ui.job_workspace.QMessageBox.warning") as warning:
+            self.panel.url_input.setText("https://my.jobstreet.com/job/12345678?tracking=1#details")
+            self.panel.browser_job_button.click()
+            self.assertEqual(open_url.call_args.args[0].toString(), "https://my.jobstreet.com/job/12345678")
+            self.panel.url_input.setText("https://example.com/job/12345678")
+            self.panel.browser_job_button.click()
+        open_url.assert_called_once()
+        warning.assert_called_once()
+
+    def test_connection_failure_remains_an_error_without_browser_launch(self):
+        self.session.get.side_effect = requests.Timeout("Connection timed out")
+        with patch("src.crawler.jobstreet.requests.Session", return_value=self.session), \
+                patch("src.ui.job_workspace.QDesktopServices.openUrl") as open_url, \
+                patch("src.ui.job_workspace.QMessageBox.warning") as warning:
+            self.panel.search_button.click()
+            self.wait_for_operation()
+        warning.assert_called_once()
+        open_url.assert_not_called()
         self.assertTrue(self.panel.search_button.isEnabled())
 
     def test_failed_fetch_removes_previous_ad_and_recovers_to_paste(self):
@@ -292,6 +368,8 @@ class JobWorkspaceTests(unittest.TestCase):
                 self.assertFalse(self.window.browse_button.isEnabled())
                 self.assertTrue(self.panel.job_text.isReadOnly())
                 self.assertFalse(self.panel.search_button.isEnabled())
+                self.assertFalse(self.panel.browser_search_button.isEnabled())
+                self.assertFalse(self.panel.browser_job_button.isEnabled())
                 event = QCloseEvent()
                 self.window.closeEvent(event)
                 self.assertFalse(event.isAccepted())

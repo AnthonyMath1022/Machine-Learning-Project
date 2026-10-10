@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.crawler.jobstreet import (
-    JobDescriptionSearch, cosine_similarity, export_to_csv, extract_skills,
+    JobDescriptionSearch, JobStreetAccessError, cosine_similarity, export_to_csv, extract_skills,
 )
 from src.crawler.parser import (
     extract_company, extract_description, extract_requirements, extract_title,
@@ -119,6 +119,20 @@ class JobStreetTests(unittest.TestCase):
         self.session.get.side_effect = requests.Timeout("Timed out")
         with self.assertRaises(requests.Timeout):
             self.client.search_job("Python")
+
+    def test_blocked_requests_have_actionable_errors_and_close_responses(self):
+        for status in (403, 429):
+            with self.subTest(status=status):
+                response = response_for("<title>Just a moment...</title>")
+                response.status_code = status
+                response.raise_for_status.side_effect = requests.HTTPError(response=response)
+                self.session.get.return_value = response
+                with self.assertRaises(JobStreetAccessError) as caught:
+                    self.client.search_job("Python")
+                self.assertIs(caught.exception.response, response)
+                self.assertIn(str(status), str(caught.exception))
+                self.assertIn("browser", str(caught.exception))
+                response.close.assert_called_once()
 
     def test_fetch_job_extracts_full_ad_without_navigation_or_scripts(self):
         self.session.get.return_value = response_for(DETAIL_HTML)

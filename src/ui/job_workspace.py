@@ -7,7 +7,8 @@ import gc
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QThread, Qt, Signal, Slot
+from PySide6.QtCore import QThread, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLayout, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
@@ -23,7 +24,7 @@ DEFAULT_MODEL_ID = OLLAMA_MODEL_ID
 
 class OperationWorker(QThread):
     succeeded = Signal(object)
-    failed = Signal(str)
+    failed = Signal(object)
 
     def __init__(self, operation: Callable, parent=None):
         super().__init__(parent)
@@ -33,7 +34,7 @@ class OperationWorker(QThread):
         try:
             result = self.operation()
         except Exception as error:
-            self.failed.emit(str(error) or type(error).__name__)
+            self.failed.emit(error)
         else:
             self.succeeded.emit(result)
 
@@ -124,6 +125,7 @@ class JobWorkspace(QWidget):
         self.session = AgentSession()
         self._pending_error = None
         self._result_handler = None
+        self._browser_target = ""
         self._build_ui()
         self.refresh_controls()
 
@@ -161,6 +163,9 @@ class JobWorkspace(QWidget):
         self.search_button.setObjectName("primary")
         self.search_button.clicked.connect(self.search_jobs)
         search_layout.addWidget(self.search_button)
+        self.browser_search_button = QPushButton("Search in browser")
+        self.browser_search_button.clicked.connect(self.search_in_browser)
+        search_layout.addWidget(self.browser_search_button)
         self.results_hint = info_label("Search one page, then select an ad to fetch its full description.")
         search_layout.addWidget(self.results_hint)
         self.results_list = QListWidget()
@@ -179,6 +184,9 @@ class JobWorkspace(QWidget):
         self.fetch_url_button = QPushButton("Load URL")
         self.fetch_url_button.clicked.connect(self.fetch_url)
         search_layout.addWidget(self.fetch_url_button)
+        self.browser_job_button = QPushButton("Open job in browser")
+        self.browser_job_button.clicked.connect(self.open_job_in_browser)
+        search_layout.addWidget(self.browser_job_button)
         scroll = QScrollArea()
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
@@ -277,8 +285,10 @@ class JobWorkspace(QWidget):
         has_resume = bool(self.resume_text().strip())
         has_job = bool(self.job_text.toPlainText().strip())
         self.search_button.setEnabled(not busy and bool(self.title_input.text().strip()))
+        self.browser_search_button.setEnabled(not busy and bool(self.title_input.text().strip()))
         self.fetch_button.setEnabled(not busy and self.results_list.currentRow() >= 0)
         self.fetch_url_button.setEnabled(not busy and bool(self.url_input.text().strip()))
+        self.browser_job_button.setEnabled(not busy and bool(self.url_input.text().strip()))
         self.similarity_button.setEnabled(not busy and has_resume and has_job)
         self.match_button.setEnabled(not busy and has_resume and has_job and bool(self.model_input.text().strip()))
         for control in (self.title_input, self.location_input, self.page_input,
@@ -339,9 +349,9 @@ class JobWorkspace(QWidget):
     def _show_result(self, result):
         self._result_handler(result)
 
-    @Slot(str)
-    def _record_error(self, message: str):
-        self._pending_error = message
+    @Slot(object)
+    def _record_error(self, error: Exception):
+        self._pending_error = error
 
     @Slot()
     def _finished(self):
@@ -353,6 +363,24 @@ class JobWorkspace(QWidget):
         self.refresh_controls()
         error, self._pending_error = self._pending_error, None
         if error:
+            if self._operation_kind in {"search", "fetch"}:
+                from src.crawler.jobstreet import JobStreetAccessError, JobStreetPageError
+
+                if isinstance(error, (JobStreetAccessError, JobStreetPageError)):
+                    guidance = str(error)
+                    if self._open_browser(self._browser_target):
+                        guidance += " Browser opened. Choose a job and paste its complete description here."
+                    else:
+                        guidance += " Use the browser button to try again, or open this address manually: " + self._browser_target
+                    if self._operation_kind == "search":
+                        self.results_hint.setText(guidance)
+                    else:
+                        self.job_source.setText(guidance)
+                    self.detail_tabs.setCurrentIndex(0)
+                    self.job_text.setFocus()
+                    self.status_changed.emit(guidance)
+                    return
+            error = str(error) or type(error).__name__
             if self._operation_kind == "search":
                 self.results_hint.setText("Search failed. Try again or paste a job description.")
             elif self._operation_kind == "fetch":
@@ -363,9 +391,43 @@ class JobWorkspace(QWidget):
                 self.similarity_label.setText("Text similarity could not be calculated.")
             self.status_changed.emit("Operation failed: " + error)
             message = error
-            if "403" in error or "blocked" in error.lower() or "JavaScript" in error:
-                message += "\n\nYou can paste the job description to continue matching."
             QMessageBox.warning(self, "Could not complete operation", message)
+
+    def _open_browser(self, url: str) -> bool:
+        return QDesktopServices.openUrl(QUrl(url))
+
+    @Slot()
+    def search_in_browser(self):
+        if self.busy or not self.title_input.text().strip():
+            return
+        from src.crawler.jobstreet import JobDescriptionSearch
+
+        url = JobDescriptionSearch.build_search_url(
+            self.title_input.text(), self.location_input.text(), self.page_input.value(),
+        )
+        self._show_browser_guidance(url, self.results_hint)
+
+    @Slot()
+    def open_job_in_browser(self):
+        if self.busy or not self.url_input.text().strip():
+            return
+        from src.crawler.jobstreet import _job_url
+
+        try:
+            _, url = _job_url(self.url_input.text().strip())
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid JobStreet URL", str(error))
+            return
+        self._show_browser_guidance(url, self.job_source)
+
+    def _show_browser_guidance(self, url: str, hint: QLabel):
+        if self._open_browser(url):
+            message = "Browser opened. Choose a job, copy its complete description, and paste it here to continue matching."
+        else:
+            message = "Could not open your browser. Open this address manually and paste the job description: " + url
+        hint.setText(message)
+        self.detail_tabs.setCurrentIndex(0)
+        self.status_changed.emit(message)
 
     @Slot()
     def search_jobs(self):
@@ -375,10 +437,11 @@ class JobWorkspace(QWidget):
         self.listings = []
         self.results_list.clear()
         self.results_hint.setText("Searching…")
+        from src.crawler.jobstreet import JobDescriptionSearch
+
+        self._browser_target = JobDescriptionSearch.build_search_url(title, location, page)
 
         def search():
-            from src.crawler.jobstreet import JobDescriptionSearch
-
             with JobDescriptionSearch(timeout=20) as crawler:
                 return crawler.search_job(title, location, page=page)
 
@@ -421,12 +484,15 @@ class JobWorkspace(QWidget):
         self.job_text.clear()
         self.job_source.setText("Loading job description…")
         self.detail_tabs.setCurrentIndex(0)
+        self._browser_target = url
 
         def fetch():
-            from src.crawler.jobstreet import JobDescriptionSearch
+            from src.crawler.jobstreet import JobDescriptionSearch, _job_url
 
+            _, canonical_url = _job_url(url)
+            self._browser_target = canonical_url
             with JobDescriptionSearch(timeout=20) as crawler:
-                return crawler.fetch_job(url)
+                return crawler.fetch_job(canonical_url)
 
         self._start(fetch, self._show_job, "Loading full job description…", "fetch")
 

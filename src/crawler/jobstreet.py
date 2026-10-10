@@ -27,6 +27,14 @@ from src.nlp.skill_extractor import SKILLS, extract_skills
 BASE_URL = "https://my.jobstreet.com"
 
 
+class JobStreetAccessError(requests.HTTPError):
+    """JobStreet refused automated access; the user can browse the page."""
+
+
+class JobStreetPageError(ValueError):
+    """The downloaded page cannot be used as a listing or full job ad."""
+
+
 def _job_url(url: str) -> tuple[str, str]:
     """Validate a Malaysia job link and discard tracking parameters."""
     parsed = urlsplit(urljoin(BASE_URL, url))
@@ -83,7 +91,17 @@ class JobDescriptionSearch:
     def _fetch_html(self, url: str) -> str:
         response = self.session.get(url, timeout=self.timeout)
         try:
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except requests.HTTPError as error:
+                if response.status_code in (403, 429):
+                    raise JobStreetAccessError(
+                        "JobStreet blocked automatic retrieval "
+                        f"(HTTP {response.status_code}). Open the page in your browser "
+                        "and paste the complete job description to continue matching.",
+                        response=response,
+                    ) from error
+                raise
             return response.text
         finally:
             response.close()
@@ -120,7 +138,7 @@ class JobDescriptionSearch:
             if not any(message in text for message in (
                 "no matching jobs", "no jobs found", "we couldn't find any jobs",
             )):
-                raise ValueError("No job cards found. The page may require JavaScript, be blocked, or use an unsupported layout.")
+                raise JobStreetPageError("No job cards found. The page may require JavaScript, be blocked, or use an unsupported layout.")
         return jobs
 
     def fetch_job(self, url: str) -> Job:
@@ -130,7 +148,7 @@ class JobDescriptionSearch:
         title = extract_title(soup)
         description = extract_description(soup)
         if not title or not description:
-            raise ValueError("Job title or description is missing. The ad may have expired, require JavaScript, or use an unsupported layout.")
+            raise JobStreetPageError("Job title or description is missing. The ad may have expired, require JavaScript, or use an unsupported layout.")
         place = soup.select_one('[data-automation="job-detail-location"], [data-automation="jobLocation"]')
         return Job(
             job_id=job_id, title=title, company=extract_company(soup),

@@ -123,9 +123,14 @@ load AI or embedding models or contact Ollama.
 In **Jobs & matching**, search JobStreet Malaysia by role, location and page.
 Select a listing and click **Load selected job** to fetch its full description;
 search summaries are not used for matching. You can also load an individual
-JobStreet URL. If a request is blocked or the ad layout is unsupported, paste the
-complete job description into the editable text area instead. Errors are shown
-without treating blocked pages as job descriptions.
+JobStreet URL. **Search in browser** opens the same role, location and page in
+your default browser; **Open job in browser** opens the entered ad URL. If
+automatic retrieval is blocked (HTTP 403/429) or the ad layout is unsupported,
+the app opens the requested page in your browser and shows instructions inline.
+Choose a job, copy its complete description, and paste it into the editable text
+area to continue matching. Browser results are not automatically imported into
+the app. If no browser can be opened, the app displays the address to open
+manually. Other errors still show a warning without treating failed pages as jobs.
 
 After extracting a resume and reviewing the job description, click **Text
 similarity** for a local TF-IDF score, or **Run AI match** for the local agent's
@@ -469,10 +474,13 @@ full ad is fetched. Salary fields stay `None`; salary ranges and periods are
 not yet parsed. Requirements extraction uses recognized headings and may return
 `None` for unstructured prose; the full description is still retained.
 
-JobStreet returned HTTP 403 during the live request check on 9 October 2026.
+JobStreet returned HTTP 403 with a "Just a moment..." challenge during the live
+request check on 10 October 2026.
 Successful live crawling and the current HTML selectors could not be verified.
-This client propagates blocked requests and cannot render JavaScript. Missing
-ad bodies and unsupported search layouts raise `ValueError`; a recognized
+This client raises `JobStreetAccessError` (a `requests.HTTPError` subclass) for
+HTTP 403/429 and cannot render JavaScript. The desktop handles these errors
+with the browser-and-paste workflow above. Missing ad bodies and unsupported
+search layouts raise `JobStreetPageError` (a `ValueError` subclass); a recognized
 no-results message returns an empty list. Offline tests cover representative
 HTML and JSON-LD fixtures, without contacting JobStreet.
 
