@@ -15,8 +15,19 @@ from src.models.ollama_agent import OllamaJobMatchAgent
 from test_model import JOB, RESUME, SUMMARY, FIT
 
 
-def response_for(content, *, done_reason="stop", done=True):
-    return {"message": {"content": json.dumps(content)}, "done": done, "done_reason": done_reason}
+def response_for(content, *, done_reason="stop", done=True, prompt_tokens=1000, output_tokens=200):
+    return {"message": {"content": json.dumps(content)}, "done": done, "done_reason": done_reason,
+            "prompt_eval_count": prompt_tokens, "eval_count": output_tokens}
+
+
+def http_session(response):
+    session = Mock()
+    session.__enter__ = Mock(return_value=session)
+    session.__exit__ = Mock(return_value=False)
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    session.post.return_value = response
+    return session
 
 
 class OllamaTests(unittest.TestCase):
@@ -40,6 +51,8 @@ class OllamaTests(unittest.TestCase):
         self.assertEqual(payload["model"], OLLAMA_MODEL_ID)
         self.assertFalse(payload["think"])
         self.assertFalse(payload["stream"])
+        self.assertIs(payload["truncate"], False)
+        self.assertIs(payload["shift"], False)
         self.assertEqual(payload["format"], JobSummary.model_json_schema())
         self.assertEqual(payload["options"]["num_ctx"], 8192)
         self.assertEqual(payload["options"]["num_predict"], 2048)
@@ -66,8 +79,8 @@ class OllamaTests(unittest.TestCase):
     def test_incomplete_truncated_and_empty_answers_rejected(self):
         agent = OllamaJobMatchAgent()
         for data in (response_for(SUMMARY, done=False), response_for(SUMMARY, done_reason="length"),
-                     {"done": True, "done_reason": "stop", "message": {"content": ""}},
-                     {"done": True, "done_reason": "stop", "message": {"content": "{broken"}}):
+                     {**response_for(SUMMARY), "message": {"content": ""}},
+                     {**response_for(SUMMARY), "message": {"content": "{broken"}}):
             with self.subTest(data=data), patch.object(agent, "_request", return_value=data):
                 with self.assertRaises(AgentOutputError):
                     agent.summarize_job(JOB)
@@ -75,7 +88,7 @@ class OllamaTests(unittest.TestCase):
     def test_input_budget_and_invalid_config_fail_before_requests(self):
         agent = OllamaJobMatchAgent()
         with patch.object(agent, "_request") as request:
-            for job in ("", "a" * 9000, "你好" * 1500):
+            for job in ("", "a" * 30000, "你好" * 5000):
                 with self.assertRaises(ValueError):
                     agent.summarize_job(job)
             request.assert_not_called()
@@ -84,6 +97,50 @@ class OllamaTests(unittest.TestCase):
                        {"timeout": 0}, {"timeout": float("nan")}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 OllamaJobMatchAgent(**kwargs)
+
+    def test_realistic_documents_fit_the_context_and_are_sent_whole(self):
+        # About 3 KB of job ad and 6 KB of resume: rejected when bytes were counted as tokens.
+        job = JOB + " Maintain dashboards and explain sales trends to stakeholders." * 50
+        resume = RESUME + " Automated weekly reporting for regional managers." * 120
+        agent = OllamaJobMatchAgent()
+        with patch.object(agent, "_request", side_effect=[response_for(SUMMARY), response_for(FIT)]) as request:
+            self.assertEqual(agent.assess_resume(job, resume).fit, "strong_fit")
+        content = request.call_args_list[1].args[1]["messages"][1]["content"]
+        self.assertIn(job, content)
+        self.assertIn(resume, content)
+
+    def test_prompt_rejected_by_ollama_is_actionable_and_model_is_still_unloaded(self):
+        agent = OllamaJobMatchAgent()
+        # Body returned by Ollama 0.40.2 for truncate=False with a 12,208-token prompt.
+        response = Mock(status_code=400, text=json.dumps({"error": json.dumps({"error": {
+            "code": 400, "type": "exceed_context_size_error", "n_prompt_tokens": 12208, "n_ctx": 8192,
+            "message": "request (12208 tokens) exceeds the available context size (8192 tokens), try increasing it",
+        }})}))
+        response.raise_for_status.side_effect = requests.HTTPError(response=response)
+        with patch("src.models.ollama_agent.requests.Session", return_value=http_session(response)),                 self.assertRaisesRegex(ValueError, "need 12,208 tokens, more than the 8,192-token context") as caught:
+            agent.summarize_job(JOB)
+        self.assertNotIsInstance(caught.exception, AgentOutputError)
+        with patch.object(agent, "_request") as request:
+            agent.unload()
+        request.assert_called_once()
+        response.text = json.dumps({"error": "invalid options"})
+        with patch("src.models.ollama_agent.requests.Session", return_value=http_session(response)),                 self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+            agent.summarize_job(JOB)
+
+    def test_missing_token_usage_and_context_overflow_fail_closed(self):
+        agent = OllamaJobMatchAgent()
+        for field in ("prompt_eval_count", "eval_count"):
+            data = response_for(SUMMARY)
+            del data[field]
+            with self.subTest(field=field), patch.object(agent, "_request", return_value=data),                     self.assertRaisesRegex(AgentOutputError, "token usage"):
+                agent.summarize_job(JOB)
+        # Seen when context shifting is left on: the answer completes after prompt tokens were dropped.
+        shifted = response_for(SUMMARY, prompt_tokens=7512, output_tokens=900)
+        with patch.object(agent, "_request", return_value=shifted),                 self.assertRaisesRegex(ValueError, "exceed the 8,192-token context"):
+            agent.summarize_job(JOB)
+        full = response_for(SUMMARY, prompt_tokens=7512, output_tokens=680)
+        with patch.object(agent, "_request", return_value=full):
+            self.assertEqual(agent.summarize_job(JOB).title, "Data Analyst")
 
     def test_unload_is_sent_only_after_use_and_releases_memory(self):
         agent = OllamaJobMatchAgent()
@@ -98,14 +155,9 @@ class OllamaTests(unittest.TestCase):
 
     def test_local_http_disables_proxies_and_closes_response(self):
         agent = OllamaJobMatchAgent()
-        session, response = Mock(), Mock()
-        session.__enter__ = Mock(return_value=session)
-        session.__exit__ = Mock(return_value=False)
-        response.__enter__ = Mock(return_value=response)
-        response.__exit__ = Mock(return_value=False)
-        response.status_code = 200
+        response = Mock(status_code=200)
         response.json.return_value = {"done": True}
-        session.post.return_value = response
+        session = http_session(response)
         with patch("src.models.ollama_agent.requests.Session", return_value=session):
             self.assertEqual(agent._request("/api/chat", {"model": "local"}), {"done": True})
         self.assertFalse(session.trust_env)

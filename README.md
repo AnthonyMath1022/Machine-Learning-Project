@@ -234,11 +234,15 @@ No resume text is sent to Hugging Face; Hugging Face is used to download weights
 
 The context is set to 8,192 tokens with at most 2,048 output tokens to leave GPU
 memory for the context cache. Because Ollama exposes no public tokenizer endpoint,
-the client uses a conservative UTF-8 byte bound for input messages with reserved
-space for the chat template. This can reject documents that would tokenize into
-fewer tokens; shorten them when the context-budget error appears. It does not
-silently truncate the resume or job description. Truncated or malformed output
-is rejected rather than shown as a complete assessment.
+the client estimates input tokens at four UTF-8 bytes each (Qwen3-8B measured
+4.0-4.2 for English prompts) and rejects clearly oversized documents before
+contacting Ollama. Ollama then enforces the exact limit: requests set
+`truncate` and `shift` to `false`, so an oversized prompt returns an error
+instead of being shortened, and the reported token counts are checked afterward.
+About 20 KB of English job and resume text fits. The resume and job description
+are never silently truncated; this relies on Ollama honouring those two options,
+confirmed on 0.40.2. Truncated or malformed output is rejected rather than shown
+as a complete assessment.
 
 Use the same backend from the command line:
 

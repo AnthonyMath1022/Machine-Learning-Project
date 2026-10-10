@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+import re
 from urllib.parse import urlsplit
 
 import requests
@@ -13,6 +14,11 @@ from pydantic import ValidationError
 
 from src.models.config import OLLAMA_BASE_URL, OLLAMA_CONTEXT, OLLAMA_MODEL_ID
 from src.models.model import AgentOutputError, JobMatchAgent, SYSTEM_PROMPT
+
+
+# Qwen3-8B through Ollama measured about 4.0-4.2 UTF-8 bytes per token for English
+# prompts and more for Chinese. This only screens out clearly oversized input.
+BYTES_PER_TOKEN = 4
 
 
 class OllamaJobMatchAgent(JobMatchAgent):
@@ -66,6 +72,14 @@ class OllamaJobMatchAgent(JobMatchAgent):
                 if error.response is not None and error.response.status_code == 404:
                     raise RuntimeError(f"Ollama model is unavailable. Run: ollama pull {self.model_id}") from error
                 status = error.response.status_code if error.response is not None else "unknown"
+                if status == 400 and re.search(r"exceeds?\b.*\bcontext", error.response.text, re.IGNORECASE | re.DOTALL):
+                    # Ollama counted the prompt, so the model is loaded and must be unloaded later.
+                    self._loaded = True
+                    needed = re.search(r'n_prompt_tokens\\*"\s*:\s*(\d+)', error.response.text)
+                    detail = f"need {int(needed.group(1)):,} tokens, more than" if needed else "do not fit in"
+                    raise ValueError(
+                        f"Documents {detail} the {self.context_size:,}-token context; shorten them before analysis."
+                    ) from error
                 raise RuntimeError(f"Ollama request failed (HTTP {status}). Check the local Ollama log.") from error
             except ValueError as error:
                 raise AgentOutputError("Ollama returned an invalid JSON response.") from error
@@ -83,21 +97,31 @@ class OllamaJobMatchAgent(JobMatchAgent):
                 + "\nDocuments (JSON data):\n" + json.dumps(documents, ensure_ascii=False)
             )},
         ]
-        # Ollama has no public tokenize endpoint. UTF-8 bytes give a conservative
-        # upper bound for Qwen's byte-level tokenizer; reserve template space.
-        input_bound = sum(len(message["content"].encode("utf-8")) for message in messages)
-        if input_bound > self.max_input_tokens:
-            raise ValueError(f"Documents exceed the conservative {self.context_size:,}-token context budget; shorten them before analysis.")
+        # Ollama has no public tokenize endpoint, so estimate before sending and let
+        # Ollama enforce the exact limit: with truncate/shift disabled it rejects an
+        # oversized prompt instead of silently dropping part of the documents.
+        estimate = math.ceil(sum(len(message["content"].encode("utf-8")) for message in messages) / BYTES_PER_TOKEN)
+        if estimate > self.max_input_tokens:
+            raise ValueError(
+                f"Documents are too long for the {self.context_size:,}-token context (about {estimate:,} "
+                f"input tokens, {self.max_input_tokens:,} available); shorten them before analysis."
+            )
         data = self._request("/api/chat", {
             "model": self.model_id, "messages": messages,
             "stream": False, "think": False, "format": schema.model_json_schema(),
-            "keep_alive": "5m",
+            "keep_alive": "5m", "truncate": False, "shift": False,
             "options": {"num_ctx": self.context_size, "num_predict": self.max_new_tokens,
                         "temperature": 0, "seed": 42},
         })
         self._loaded = True
         if data.get("done") is not True or data.get("done_reason") != "stop":
             raise AgentOutputError("Ollama generation was incomplete or reached its output limit; shorten the documents and retry.")
+        used = (data.get("prompt_eval_count"), data.get("eval_count"))
+        if any(isinstance(count, bool) or not isinstance(count, int) for count in used):
+            raise AgentOutputError("Ollama did not report token usage, so the complete documents cannot be confirmed as read.")
+        # An Ollama that ignores shift=False discards prompt tokens once the context fills.
+        if sum(used) > self.context_size:
+            raise ValueError(f"Documents and the answer exceed the {self.context_size:,}-token context; shorten them before analysis.")
         message = data.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
